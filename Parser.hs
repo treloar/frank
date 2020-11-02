@@ -76,6 +76,14 @@ ctr = attachLoc $ Ctr <$> identifier <*> many vtype'
 handlerTopSig :: MonadicParsing m => m (MHSig Raw)
 handlerTopSig = attachLoc $ Sig <$> (try $ identifier <* symbol ":")        -- try: commit after colon
                                 <*> sigType
+--handlerTopSig = attachLoc $ do
+--                              (usage, id) <- try $ do
+--                                                     usage <- identifier
+--                                                     id <- identifier
+--                                                     symbol ":"
+--                                                     return (usage, id)
+--                              sig <- sigType
+--                              return $ Sig usage id sig
 
 -- As the outer braces are optional in top-level signatures we require
 -- that plain pegs must have explicit ability brackets.
@@ -94,22 +102,9 @@ handlerTopSig = attachLoc $ Sig <$> (try $ identifier <* symbol ":")        -- t
 --
 --   x : []Int
 sigType :: MonadicParsing m => m (CType Raw)
-sigType = (do a <- getLoc
-              ct <- ctypeOld
-              rest <- optional (symbol "->" *> ctypeOldNoBrac)
-              return $
-                case rest of
-                  Nothing -> modifyAnn a ct
-                  Just (CType ports peg a') ->
-                        CType (Port [] (SCTy ct a') a' : ports) peg a) <|>
-          -- TODO: LC: Integrate the new syntax properly...
-          -- Part of new syntax [...]{... -> A} instead of {... -> [...]A}
-          try ctypeNew <|>
-          attachLoc (do ports <- some (try (port <* symbol "->"))
-                        peg <- peg
-                        return $ CType ports peg) <|>
-          attachLoc (do peg <- pegExplicit
-                        return $ CType [] peg)
+sigType = do a <- getLoc
+             ct <- ctype
+             return $ modifyAnn a ct
 
 handlerTopCls :: MonadicParsing m => m (MHCls Raw)
 handlerTopCls = provideLoc $ \a -> do
@@ -158,33 +153,20 @@ itfAliasDef = attachLoc $ do
 -- Types --
 -----------
 
--- Supports both syntaxes [...]{... -> A} and {... -> [...]A}
+-- syntax {(...)[...]A}
 ctype :: MonadicParsing m => m (CType Raw)
-ctype = ctypeNew <|> ctypeOld
+ctype = braces (ctypeNoBrac)
 
--- New syntax [...]{... -> A}, must have explicit [...]
-ctypeNew :: MonadicParsing m => m (CType Raw)
-ctypeNew = do ab <- abExplicit
-              sndPart ab
-  where
-  sndPart :: MonadicParsing m => Ab Raw -> m (CType Raw)
-  sndPart ab = braces (attachLoc $ do ports <- many (try (port <* symbol "->"))
-                                      peg <- pegSndPart ab
-                                      return $ CType ports peg)
-  pegSndPart :: MonadicParsing m => Ab Raw -> m (Peg Raw)
-  pegSndPart ab = attachLoc $ Peg ab <$> vtype
+ctypeNoBrac :: MonadicParsing m => m (CType Raw)
+ctypeNoBrac = attachLoc $ do ports <- ctypeArgs
+                             peg <- peg
+                             return $ CType ports peg
 
--- Old syntax {... -> [...]A}, does not need to have explicit [...]
-ctypeOld :: MonadicParsing m => m (CType Raw)
-ctypeOld = braces (ctypeOldNoBrac)
-
-ctypeOldNoBrac :: MonadicParsing m => m (CType Raw)
-ctypeOldNoBrac = attachLoc $ do ports <- many (try (port <* symbol "->"))
-                                peg <- peg
-                                return $ CType ports peg
+ctypeArgs ::MonadicParsing m => m [Port Raw]
+ctypeArgs = parens (sepBy port (symbol ","))
 
 port :: MonadicParsing m => m (Port Raw)
-port = attachLoc $ Port <$> portAdjs <*> vtype
+port = attachLoc $ Port <$> portAdjs <*> usageVType
 
 portAdjs :: MonadicParsing m => m [Adjustment Raw]
 portAdjs = do mAdjs <- optional $ angles (do adps <- portAdps
@@ -204,11 +186,11 @@ portExtensions :: MonadicParsing m => m [Adjustment Raw]
 portExtensions = sepBy consAdj (symbol ",")
 
 peg :: MonadicParsing m => m (Peg Raw)
-peg = attachLoc $ Peg <$> ab <*> vtype
+peg = attachLoc $ Peg <$> ab <*> usageVType
 
 -- peg with explicit ability
-pegExplicit :: MonadicParsing m => m (Peg Raw)
-pegExplicit = attachLoc $ Peg <$> abExplicit <*> vtype
+--pegExplicit :: MonadicParsing m => m (Peg Raw)
+--pegExplicit = attachLoc $ Peg <$> abExplicit <*> vtype
 
 adjs :: MonadicParsing m => m [Adjustment Raw]
 adjs = do mAdjs <- optional $ angles (sepBy adj (symbol ","))
@@ -263,6 +245,14 @@ abBody = provideLoc $ \a ->
                       (try $ AbVar <$> identifier <* symbol "|" <*> pure a)
                m <- itfInstances
                return $ Ab e m a)
+
+usageVType :: MonadicParsing m => m (UsageVType Raw)
+usageVType = attachLoc $ do
+                           usage <- parseUsage
+                           symbol ":"
+                           id <- vtype
+                           return $ UsageTy usage id
+
 
 -- This parser gives higher precedence to MkDTTy when coming across "X"
 -- E.g., the type "X" becomes   MkDTTy "X" []   (instead of MkTVar "X")
@@ -462,6 +452,7 @@ anonymousCls = attachLoc $ do ps <- choice [try patterns, pure []]
           symbol "->"
           return ps
 
+
 --------------
 -- Patterns --
 --------------
@@ -574,3 +565,7 @@ eplist xs = g xs [] []
 
 parseInt :: (MonadicParsing m) => m Int
 parseInt = integer >>= (return . fromIntegral)
+
+parseUsage :: (MonadicParsing m) => m (Usage Raw)
+parseUsage = attachLoc $ try (symbol "*" *> return UMany) <|>
+                         symbol "1" *> return UOnce

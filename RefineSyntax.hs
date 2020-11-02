@@ -158,12 +158,12 @@ refineCType (CType xs z a) = do ys <- mapM refinePort xs
 
 refinePort :: Port Raw -> Refine (Port Refined)
 refinePort (Port adjs ty a) = do adjs' <- mapM refineAdj adjs
-                                 ty' <- refineVType ty
+                                 ty' <- refineUsageVType ty
                                  return $ Port (concat adjs') ty' (rawToRef a)
 
 refinePeg :: Peg Raw -> Refine (Peg Refined)
 refinePeg (Peg ab ty a) = do ab' <- refineAb ab
-                             ty' <- refineVType ty
+                             ty' <- refineUsageVType ty
                              return $ Peg ab' ty' (rawToRef a)
 
 refineAb :: Ab Raw -> Refine (Ab Refined)
@@ -259,6 +259,18 @@ refineItfInsts a (x, insts) = do
                       insts
        return (x, insts')
     Nothing -> throwError $ errorRefIdNotDeclared "interface" x a
+
+refineUsage :: Usage Raw -> Refine (Usage Refined)
+refineUsage (UOnce a) = do
+    return $ UOnce (rawToRef a)
+refineUsage (UMany a) = do
+    return $ UMany (rawToRef a)
+
+refineUsageVType :: UsageVType Raw -> Refine (UsageVType Refined)
+refineUsageVType (UsageTy use ty a) = do
+  ty' <- refineVType ty
+  use' <- refineUsage use
+  return $ UsageTy use' ty' (rawToRef a)
 
 -- Explicit refinements:
 -- + implicit [£] ty args to data types are made explicit
@@ -489,15 +501,15 @@ initialiseRState dts itfs itfAls =
      putRCtrs       ctrs'
 
 makeIntBinOp :: Refined -> Char -> MHDef Refined
-makeIntBinOp a c = Def [c] (CType [Port [] (IntTy a) a
-                                  ,Port [] (IntTy a) a]
-                                  (Peg (Ab (AbVar "£" a) (ItfMap M.empty a) a) (IntTy a) a) a) [] a
+makeIntBinOp a c = Def [c] (CType [Port [] (UsageTy (UMany a) (IntTy a) a) a
+                                  ,Port [] (UsageTy (UMany a) (IntTy a) a) a]
+                                  (Peg (Ab (AbVar "£" a) (ItfMap M.empty a) a) (UsageTy (UMany a) (IntTy a) a) a) a) [] a
 
 makeIntBinCmp :: Refined -> Char -> MHDef Refined
-makeIntBinCmp a c = Def [c] (CType [Port [] (IntTy a) a
-                                   ,Port [] (IntTy a) a]
+makeIntBinCmp a c = Def [c] (CType [Port [] (UsageTy (UMany a) (IntTy a) a) a
+                                   ,Port [] (UsageTy (UMany a) (IntTy a) a) a]
                              (Peg (Ab (AbVar "£" a) (ItfMap M.empty a) a)
-                              (DTTy "Bool" [] a) a) a) [] a
+                              (UsageTy (UMany a) (DTTy "Bool" [] a) a) a) a) [] a
 
 {-- The initial state for the refinement pass. -}
 
@@ -534,28 +546,28 @@ builtinMHDefs = map (makeIntBinOp (Refined BuiltIn)) "+-" ++
                 [caseDef, charEq, alphaNumPred]
 
 charEq :: MHDef Refined
-charEq = Def "eqc" (CType [Port [] (CharTy a) a
-                          ,Port [] (CharTy a) a]
+charEq = Def "eqc" (CType [Port [] (UsageTy (UMany a) (CharTy a) a) a
+                          ,Port [] (UsageTy (UMany a) (CharTy a) a) a]
                           (Peg (Ab (AbVar "£" a) (ItfMap M.empty a) a)
-                               (DTTy "Bool" [] a) a) a) [] a
+                               (UsageTy (UMany a) (DTTy "Bool" [] a) a) a) a) [] a
   where a = Refined BuiltIn
 
 alphaNumPred :: MHDef Refined
 alphaNumPred = Def "isAlphaNum"
-               (CType [Port [] (CharTy a) a]
+               (CType [Port [] (UsageTy (UMany a) (CharTy a) a) a]
                           (Peg (Ab (AbVar "£" a) (ItfMap M.empty a) a)
-                               (DTTy "Bool" [] a) a) a) [] a
+                               (UsageTy (UMany a) (DTTy "Bool" [] a) a) a) a) [] a
   where a = Refined BuiltIn
 
 caseDef :: MHDef Refined
 caseDef = Def
           "case"
           (CType
-            [Port [] (TVar "X" b) b
+            [Port [] (UsageTy (UMany b) (TVar "X" b) b) b
             ,Port []
-             (SCTy (CType [Port [] (TVar "X" b) b]
-                      (Peg (Ab (AbVar "£" b) (ItfMap M.empty b) b) (TVar "Y" b) b) b) b) b]
-            (Peg (Ab (AbVar "£" b) (ItfMap M.empty b) b) (TVar "Y" b) b) b)
+             (UsageTy (UMany b) (SCTy (CType [Port [] (UsageTy (UMany b) (TVar "X" b) b) b]
+                      (Peg (Ab (AbVar "£" b) (ItfMap M.empty b) b) (UsageTy (UMany b) (TVar "Y" b) b) b) b) b) b) b]
+            (Peg (Ab (AbVar "£" b) (ItfMap M.empty b) b) (UsageTy (UMany b) (TVar "Y" b) b) b) b)
           [Cls
             [VPat (VarPat "x" b) b, VPat (VarPat "f" b) b]
             (Use (App (Op (VarId "f" b) b)

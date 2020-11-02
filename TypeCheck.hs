@@ -34,7 +34,7 @@ type EVMap a = M.Map Id (Ab a)
 -- 2) x is value variable
 --    - It must have been assigned a kind (mono or poly) and a type in the
 --      context. If it is a poly, instantiate the type before returning it.
-find :: Operator Desugared -> Contextual (VType Desugared)
+find :: Operator Desugared -> Contextual (UsageVType Desugared)
 find (CmdId x a) =
   do amb <- getAmbient
      (itf, qs, rs, ts, y) <- getCmd x
@@ -65,16 +65,33 @@ find (CmdId x a) =
             zipWithM_ unifyTyArg ps qs'
             -- Localise rs
             rs' <- mapM (makeFlexibleTyArg []) rs
-            let ty = SCTy (CType (map (\x -> Port [] x a) ts')
-                                 (Peg amb y' a) a) a
+            let ty = SCTy (CType (map (\x -> Port [] (UsageTy (UMany a) x a) a) ts')
+                                 (Peg amb (UsageTy (UMany a) y' a) a) a) a
             logEndFindCmd x ty
-            return ty
-find op@(VarId x _) = getContext >>= find'
+            return (UsageTy (UMany a) ty a)
+find op@(VarId x a) = getContext >>= find' >>= (dropLinear (VarId x (refToTyped a)))
   where find' BEmp = throwError $ errorTCNotInScope op
-        find' (es :< TermVar (Poly y _) ty) | x == y =
-          addMark >> makeFlexible [] ty -- instantiate polymorphic operator
+        find' (es :< TermVar (Poly y _) (UsageTy use ty a)) | x == y =
+          addMark >> makeFlexible [] ty >>= \ty' -> return $ UsageTy use ty' a -- instantiate polymorphic operator
         find' (es :< TermVar (Mono y _) ty) | x == y = return ty
         find' (es :< _) = find' es
+
+-- Drop a value out of the context if it is linear.
+dropLinear :: Operator Typed -> (UsageVType Desugared) -> Contextual (UsageVType Desugared)
+dropLinear _ uty@(UsageTy (UMany _) _ _) = return uty
+dropLinear op@(VarId x _) uty@(UsageTy (UOnce _) _ _) = do logBeginRemoveVar op uty
+                                                           modify removeVar
+                                                           logEndRemoveVar op uty
+                                                           return uty
+  where removeVar :: Context -> Context
+        removeVar BEmp = BEmp
+        removeVar (es :< TermVar op _) | x == opName op = removeVar es
+        removeVar (es :< e) = removeVar es :< e
+        opName :: Operator Typed -> Id
+        opName (Poly x _) = x
+        opName (Mono x _) = x
+        opName (VarId x _) = x
+        opName (CmdId x _) = x
 
 -- Find the first flexible type definition (as opposed to a hole) in ctx for x
 findFTVar :: Id -> Contextual (Maybe (VType Desugared))
@@ -87,15 +104,26 @@ findFTVar x = getContext >>= find'
 -- 1) Push [x:=ty] on context
 -- 2) Run computation m
 -- 3) Remove [x:=ty] from context
-inScope :: Operator Typed -> VType Desugared -> Contextual a -> Contextual a
-inScope x ty m = do modify (:< TermVar x ty)
-                    a <- m
-                    modify dropVar
-                    return a
+inScope :: Operator Typed -> UsageVType Desugared -> Contextual a -> Contextual a
+inScope x uty m = do modify (:< TermVar x uty)
+                     logContext
+                     a <- m
+                     logContext
+                     modify dropVar
+                     return a
   where dropVar :: Context -> Context
-        dropVar BEmp = error "Invariant violation"
+        dropVar BEmp = BEmp
         dropVar (es :< TermVar y _) | strip x == strip y = es
         dropVar (es :< e) = dropVar es :< e
+        ensureConsumed :: Context -> Contextual ()
+        ensureConsumed BEmp = return ()
+        ensureConsumed (es :< TermVar y (UsageTy (UOnce _) _ _)) 
+          | strip x == strip y = throwError $ "Linear value not consumed: " ++ 
+                                              (show $ ppOperator x) ++ 
+                                              " := " ++ 
+                                              (show $ ppUsageVType uty)
+        ensureConsumed (es :< TermVar y _) | strip x == strip y = return ()
+        ensureConsumed (es :< e) = ensureConsumed es
 
 -- Run a contextual computation in a modified ambient environment
 inAmbient :: Ab Desugared -> Contextual a -> Contextual a
@@ -124,7 +152,7 @@ lkpItfInAbMod itf n v = return Nothing
 
 -- infer the type of a use w.r.t. the given program
 inferEvalUse :: Prog Desugared -> Use Desugared ->
-                Either String (Use Desugared, VType Desugared)
+                Either String (Use Desugared, UsageVType Desugared)
 inferEvalUse p use = runExcept $ evalFreshMT $ evalStateT comp initTCState
   where comp = unCtx $ do _ <- initContextual p
                           inferUse use
@@ -137,7 +165,7 @@ check :: Prog Desugared -> Either String (Prog Desugared)
 check p = runExcept $ evalFreshMT $ evalStateT (checkProg p) initTCState
   where
     checkProg p = unCtx $ do MkProg xs <- initContextual p
-                             theCtx <- getContext
+                             --theCtx <- getContext
                              xs' <- mapM checkTopTm xs
                              return $ MkProg xs'
 
@@ -169,7 +197,7 @@ checkMHDef (Def id ty@(CType ps q _) cs a) = do
 --    - Check that instances to be lifted are applicable for this ambient:
 --      - Check "(amb - lifted) + lifted = amb"
 --    - Recursively infer use of term, but under ambient "amb - lifted"
-inferUse :: Use Desugared -> Contextual (Use Desugared, VType Desugared)
+inferUse :: Use Desugared -> Contextual (Use Desugared, UsageVType Desugared)
 inferUse u@(Op x _) =                                                           -- Var, PolyVar, Command rules
   do logBeginInferUse u
      ty <- find x
@@ -177,8 +205,8 @@ inferUse u@(Op x _) =                                                           
      return (u, ty)
 inferUse app@(App f xs a) =                                                     -- App rule
   do logBeginInferUse app
-     (f', ty) <- inferUse f
-     (xs', res) <- discriminate ty
+     (f', uty) <- inferUse f
+     (xs', res) <- discriminate uty
      logEndInferUse app res
      return (App f' xs' a, res)
   where -- Case distinction on operator's type ty
@@ -192,8 +220,8 @@ inferUse app@(App f xs a) =                                                     
         --           (according to arguments) and constrain ty (unify)
         --      2.2) [..., y:=ty', ..., f:=y, ...]
         --           try 2) again, this time with ty'
-        discriminate :: VType Desugared -> Contextual ([Tm Desugared], VType Desugared)
-        discriminate ty@(SCTy (CType ps (Peg ab ty' _) _) _) =
+        discriminate :: UsageVType Desugared -> Contextual ([Tm Desugared], UsageVType Desugared)
+        discriminate uty@(UsageTy use ty@(SCTy (CType ps (Peg ab uty' _) _) _) _) =
         -- {p_1 -> ... p_n -> [ab] ty'}
           do amb <- getAmbient
              -- require ab = amb
@@ -206,8 +234,8 @@ inferUse app@(App f xs a) =                                                     
                     (show $ length xs) ++ " given " ++
                     "(" ++ (show $ ppSourceOf a) ++ ")"
                else do xs' <- zipWithM checkArg ps xs
-                       return (xs', ty')
-        discriminate ty@(FTVar y a) =
+                       return (xs', uty')
+        discriminate (UsageTy use ty@(FTVar y a) _) =
           do mty <- findFTVar y  -- find definition of y in context
              case mty of
                Nothing -> -- 2.1)
@@ -215,13 +243,13 @@ inferUse app@(App f xs a) =                                                     
                  do addMark
                     amb <- getAmbient
                     ps <- mapM (\_ -> freshPort "X" a) xs
-                    q@(Peg ab ty' _)  <- freshPegWithAb amb "Y" a
-                    unify ty (SCTy (CType ps q a) a)
+                    q@(Peg ab uty@(UsageTy _ ty' _) _)  <- freshPegWithAb amb "Y" a
+                    unifyUsageTy uty (UsageTy use (SCTy (CType ps q a) a) a)
                     -- TODO: LC: We have to check typings of x_i for port p_i?
                     -- (didn't appear as a bug yet, but should be examined/fixed eventually)
-                    return (xs, ty')
+                    return (xs, (UsageTy use ty' a))
                  -- errTy ty
-               Just ty' -> discriminate ty' -- 2.2)
+               Just ty' -> discriminate (UsageTy (UMany a) ty' a) -- 2.2)
         discriminate ty = errTy ty
 
         -- TODO: tidy.
@@ -230,14 +258,14 @@ inferUse app@(App f xs a) =                                                     
         errTy ty = throwError $
                    "application (" ++ show (App f xs (Desugared Generated)) ++
                    "): expected suspended computation but got " ++
-                   (show $ ppVType ty)
+                   (show $ ppUsageVType ty)
 
         -- Check typing tm: ty in ambient [adj]
         checkArg :: Port Desugared -> Tm Desugared -> Contextual (Tm Desugared)
-        checkArg (Port adjs ty _) tm =
+        checkArg (Port adjs uty _) tm =
           do amb <- getAmbient >>= expandAb
              (_, amb') <- applyAllAdjustments adjs amb
-             inAmbient amb' (checkTm tm ty)
+             inAmbient amb' (checkTm tm uty)
 inferUse adpd@(Adapted adps t a) =
   do logBeginInferUse adpd
      amb <- getAmbient >>= expandAb
@@ -251,21 +279,23 @@ inferUse adpd@(Adapted adps t a) =
 
 -- 2nd major TC function besides "check": Check that term (construction) has
 -- given type
-checkTm :: Tm Desugared -> VType Desugared -> Contextual (Tm Desugared)
-checkTm (SC sc a) ty = SC <$> (checkSComp sc ty) <*> (pure a)
-checkTm tm@(StrTm _ a) ty = unify (desugaredStrTy a) ty >> return tm
-checkTm tm@(IntTm _ a) ty = unify (IntTy a) ty >> return tm
-checkTm tm@(CharTm _ a) ty = unify (CharTy a) ty >> return tm
-checkTm tm@(TmSeq tm1 tm2 a) ty =
+-- Note: Usage information discarded where appropriate.
+checkTm :: Tm Desugared -> UsageVType Desugared -> Contextual (Tm Desugared)
+checkTm (SC sc a) (UsageTy _ ty _) = SC <$> (checkSComp sc ty) <*> (pure a)
+checkTm tm@(StrTm _ a) (UsageTy _ ty _) = unify (desugaredStrTy a) ty >> return tm
+checkTm tm@(IntTm _ a) (UsageTy _ ty _) = unify (IntTy a) ty >> return tm
+checkTm tm@(CharTm _ a) (UsageTy _ ty _) = unify (CharTy a) ty >> return tm
+checkTm tm@(TmSeq tm1 tm2 a) uty =
   -- create dummy mvar s.t. any type of tm1 can be unified with it
   do ftvar <- freshMVar "seq"
-     tm1' <- checkTm tm1 (FTVar ftvar a)
-     tm2' <- checkTm tm2 ty
+     tm1' <- checkTm tm1 (UsageTy (UMany a) (FTVar ftvar a) a)
+     tm2' <- checkTm tm2 uty
      return $ TmSeq tm1' tm2' a
-checkTm (Use u a) t = do (u', s) <- inferUse u
-                         unify t s
-                         return $ Use u' a
-checkTm (DCon (DataCon k xs a') a) ty =
+checkTm tm@(Use u a) uty = 
+  do (u', uty') <- inferUse u
+     unifyUsageTy uty uty'
+     return $ Use u' a
+checkTm (DCon (DataCon k xs a') a) (UsageTy _ ty _) =
   do (dt, args, ts) <- getCtr k
 --    data dt arg_1 ... arg_m = k t_1 ... t_n | ...
      checkArgs k (length ts) (length xs) a
@@ -275,7 +305,8 @@ checkTm (DCon (DataCon k xs a') a) ty =
      ts' <- mapM (makeFlexible []) ts
      -- unify with expected type
      unify ty (DTTy dt args' a)
-     xs' <- mapM (uncurry checkTm) (zip xs ts')
+     let uts = map (\t -> UsageTy (UMany a) t a) ts'
+     xs' <- mapM (uncurry checkTm) (zip xs uts)
      return $ DCon (DataCon k xs' a') a
 
 
@@ -310,23 +341,23 @@ checkSComp (SComp xs a) ty = do
 -- create port <i>X for fresh X
 freshPort :: Id -> Desugared -> Contextual (Port Desugared)
 freshPort x a = do ty <- FTVar <$> freshMVar x <*> pure a
-                   return $ Port [] ty a
+                   return $ Port [] (UsageTy (UMany a) ty a) a
 
 -- create peg [E|]Y for fresh E, Y
 freshPeg :: Id -> Id -> Desugared -> Contextual (Peg Desugared)
 freshPeg x y a = do v <- AbFVar <$> freshMVar x <*> pure a
                     ty <- FTVar <$> freshMVar y <*> pure a
-                    return $ Peg (Ab v (ItfMap M.empty a) a) ty a
+                    return $ Peg (Ab v (ItfMap M.empty a) a) (UsageTy (UMany a) ty a) a
 
 -- create peg [ab]X for given [ab], fresh X
 freshPegWithAb :: Ab Desugared -> Id -> Desugared -> Contextual (Peg Desugared)
 freshPegWithAb ab x a = do ty <- FTVar <$> freshMVar x <*> pure a
-                           return $ Peg ab ty a
+                           return $ Peg ab (UsageTy (UMany a) ty a) a
 
 -- Check that given clause has given susp. comp. type (ports, peg)
 checkCls :: CType Desugared -> Clause Desugared ->
             Contextual (Clause Desugared)
-checkCls (CType ports (Peg ab ty _) _) cls@(Cls pats tm a)
+checkCls (CType ports (Peg ab uty _) _) cls@(Cls pats tm a)
 -- type:     port_1 -> ... -> port_n -> [ab]ty
 -- clause:   pat_1     ...    pat_n  =  tm
   | length pats == length ports =
@@ -336,20 +367,41 @@ checkCls (CType ports (Peg ab ty _) _) cls@(Cls pats tm a)
         -- Bring any bindings in to scope for checking the term then purge the
         -- marks (and suffixes) in the context created for this clause.
         if null bs then -- Just purge marks
-                        do tm' <- checkTm tm ty
+                        do tm' <- checkTm tm uty
                            purgeMarks
                            return (Cls pats tm' a)
-                   else -- Push all bindings to context, then check tm, then
-                        -- remove bindings, finally purge marks.
-                        do tm' <- foldl1 (.) (map (uncurry inScope) bs) $ checkTm tm ty
+                   else 
+                        do 
+                           -- Push all bindings.
+                           mapM_ (\(x, uty) -> modify (:< TermVar x uty)) bs 
+                           -- Check the term
+                           tm' <- checkTm tm uty
+                           -- Check that all linear bindings have been used.
+                           ctx <- getContext
+                           ensureConsumed ctx
+                           -- Remove bindings.
+                           mapM_ (modify . dropVar . fst) bs
+                           logContext
                            purgeMarks
                            return (Cls pats tm' a)
   | otherwise = throwError $ errorTCPatternPortMismatch cls
+  where dropVar :: Operator Typed -> Context -> Context
+        dropVar _ BEmp = BEmp
+        dropVar x (es :< TermVar y _) | strip x == strip y = es
+        dropVar x (es :< e) = dropVar x es :< e
+        ensureConsumed :: Context -> Contextual ()
+        ensureConsumed BEmp = return ()
+        ensureConsumed (es :< op@(TermVar y uty@(UsageTy (UOnce _) _ _))) 
+          = throwError $ "Linear value not consumed: " ++ 
+                         (show $ ppOperator y) ++ 
+                         " := " ++ 
+                         (show $ ppUsageVType uty)
+        ensureConsumed (es :< e) = ensureConsumed es
 
 -- Check that given pattern matches given port
 checkPat :: Pattern Desugared -> Port Desugared -> Contextual [TermBinding]
-checkPat (VPat vp _) (Port _ ty _) = checkVPat vp ty
-checkPat (CmdPat cmd n xs g a) port@(Port adjs ty b) =                                  -- P-Request rule
+checkPat (VPat vp _) (Port _ uty _) = checkVPat vp uty
+checkPat (CmdPat cmd n xs g a) port@(Port adjs uty b) =                                  -- P-Request rule
 -- interface itf q_1 ... q_m =
 --   cmd r_1 ... r_l: t_1 -> ... -> t_n -> y | ...
 
@@ -369,47 +421,49 @@ checkPat (CmdPat cmd n xs g a) port@(Port adjs ty b) =                          
           -- in ts, y
           qs' <- mapM (makeFlexibleTyArg skip) qs
           ts' <- mapM (makeFlexible skip) ts
+          let uts = map (\t -> UsageTy (UMany a) t a) ts'
           y' <- makeFlexible skip y
           zipWithM_ unifyTyArg ps qs'
           -- Check command patterns against spec. in interface def.
-          bs <- concat <$> mapM (uncurry checkVPat) (zip xs ts')
+          bs <- concat <$> mapM (uncurry checkVPat) (zip xs uts)
           -- type of continuation:  {y' -> [adj + currentAmb]ty}
-          kty <- contType y' adjs ty a
+          kty <- contType (UsageTy (UMany a) y' a) adjs uty a
           -- bindings: continuation + patterns
           return ((Mono g (refToTyped a), kty) : bs)
      else
        throwError $ errorTCCmdNotFoundInPort cmd n port
-checkPat (ThkPat x a) (Port adjs ty b) =                                         -- P-CatchAll rule
+checkPat (ThkPat x a) (Port adjs uty@(UsageTy use _ _) b) =                                    -- P-CatchAll rule
 -- pattern:  x
   do amb <- getAmbient
      (_, amb') <- applyAllAdjustments adjs amb
-     return [(Mono x (refToTyped a), SCTy (CType [] (Peg amb' ty b) b) b)]
+     return [(Mono x (refToTyped a), UsageTy use (SCTy (CType [] (Peg amb' uty b) b) b) b)]
 
 -- continuation type
-contType :: VType Desugared -> [Adjustment Desugared] -> VType Desugared -> Desugared ->
-            Contextual (VType Desugared)
-contType x adjs y a =
+contType :: UsageVType Desugared -> [Adjustment Desugared] -> UsageVType Desugared -> Desugared ->
+            Contextual (UsageVType Desugared)
+contType x adjs y@(UsageTy use _ _) a =
   do amb <- getAmbient
      (_, amb') <- applyAllAdjustments adjs amb
-     return $ SCTy (CType [Port [] x a] (Peg amb' y a) a) a
+     return $ UsageTy use (SCTy (CType [Port [] x a] (Peg amb' y a) a) a) a
 
 -- Check that a value pattern has a given type (corresponding to rules)
 -- Return its bindings (id -> value type)
-checkVPat :: ValuePat Desugared -> VType Desugared -> Contextual [TermBinding]
-checkVPat (VarPat x a) ty = return [(Mono x (refToTyped a), ty)]                             -- P-Var rule
+checkVPat :: ValuePat Desugared -> UsageVType Desugared -> Contextual [TermBinding]
+checkVPat (VarPat x a) uty = return [(Mono x (refToTyped a), uty)]                             -- P-Var rule
 --         x
-checkVPat (DataPat k ps a) ty =                                                 -- P-Data rule
+checkVPat (DataPat k ps a) (UsageTy use ty b) =                                                 -- P-Data rule
 --         k p_1 .. p_n
   do (dt, args, ts) <- getCtr k
 --   data dt arg_1 .. arg_m = k t_1 .. t_n | ...
      addMark
      args' <- mapM (makeFlexibleTyArg []) args
      ts' <- mapM (makeFlexible []) ts
+     let uts = map (\t -> UsageTy use t b) ts'
      unify ty (DTTy dt args' a)
-     concat <$> zipWithM checkVPat ps ts'
-checkVPat (CharPat _ a) ty = unify ty (CharTy a) >> return []
-checkVPat (StrPat _ a) ty = unify ty (desugaredStrTy a) >> return []
-checkVPat (IntPat _ a) ty = unify ty (IntTy a) >> return []
+     concat <$> zipWithM checkVPat ps uts
+checkVPat (CharPat _ a) (UsageTy _ ty _) = unify ty (CharTy a) >> return []
+checkVPat (StrPat _ a) (UsageTy _ ty _) = unify ty (desugaredStrTy a) >> return []
+checkVPat (IntPat _ a) (UsageTy _ ty _) = unify ty (IntTy a) >> return []
 -- checkVPat p ty = throwError $ "failed to match value pattern " ++
 --                  (show p) ++ " with type " ++ (show ty)
 
@@ -477,16 +531,18 @@ makeFlexibleCType skip (CType ps q a) = CType <$>
                                          pure a
 
 makeFlexiblePeg :: [Id] -> Peg Desugared -> Contextual (Peg Desugared)
-makeFlexiblePeg skip (Peg ab ty a) = Peg <$>
-                                      makeFlexibleAb skip ab <*>
-                                      makeFlexible skip ty <*>
-                                      pure a
+makeFlexiblePeg skip (Peg ab (UsageTy use ty b) a) =
+  do
+    ab' <- makeFlexibleAb skip ab
+    ty' <- makeFlexible skip ty
+    return $ Peg ab' (UsageTy use ty' b) a
 
 makeFlexiblePort :: [Id] -> Port Desugared -> Contextual (Port Desugared)
-makeFlexiblePort skip (Port adjs ty a) = Port <$>
-                                          (mapM (makeFlexibleAdj skip) adjs) <*>
-                                          makeFlexible skip ty <*>
-                                          pure a
+makeFlexiblePort skip (Port adjs (UsageTy use ty b) a) =
+  do
+    adjs' <- mapM (makeFlexibleAdj skip) adjs
+    ty' <- makeFlexible skip ty
+    return $ Port adjs' (UsageTy use ty' b) a
 
 applyAllAdjustments :: [Adjustment Desugared] -> Ab Desugared ->
                        Contextual ([Adjustment Desugared], Ab Desugared)

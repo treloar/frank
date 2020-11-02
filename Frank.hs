@@ -35,7 +35,7 @@ splice :: Prog Raw -> Tm Raw -> Prog Raw
 splice (MkProg xs) tm = MkProg $ xs ++ ys
   where ys = [sig, cls]
         sig = SigTm (Sig id (CType [] peg b) b) b
-        peg = Peg ab ty b
+        peg = Peg ab (UsageTy (UMany b) ty b) b
         ty = TVar "%X" b
         ab = Ab (AbVar "£" b) (ItfMap M.empty (Raw Generated)) b
         cls = ClsTm (MHCls id (Cls [] tm b) b) b
@@ -127,7 +127,7 @@ checkProg p _ =
     Left err -> die err
     Right p' -> return p'
 
-checkUse :: Prog Desugared -> Use Desugared -> IO (Use Desugared, VType Desugared)
+checkUse :: Prog Desugared -> Use Desugared -> IO (Use Desugared, UsageVType Desugared)
 checkUse p use =
   case inferEvalUse p use of
     Left err -> die err

@@ -430,26 +430,47 @@ type CType a = AnnotTFix a CTypeF
 pattern CType ports peg a = Fx (AnnF (MkCType ports peg, a))
 
 data PortF :: ((* -> *) -> (* -> *)) -> * -> * where
-  MkPort :: [TFix t AdjustmentF] -> TFix t VTypeF -> PortF t r              -- ports
+  MkPort :: [TFix t AdjustmentF] -> TFix t UsageVTypeF -> PortF t r              -- ports
 deriving instance (Show (TFix t AdjustmentF),
-                   Show (TFix t VTypeF),
+                   Show (TFix t UsageVTypeF),
                    Show r, Show (TFix t PortF)) => Show (PortF t r)
 deriving instance (Eq (TFix t AdjustmentF),
-                   Eq (TFix t VTypeF),
+                   Eq (TFix t UsageVTypeF),
                    Eq r, Eq (TFix t PortF)) => Eq (PortF t r)
 type Port a = AnnotTFix a PortF
 pattern Port adjs ty a = Fx (AnnF (MkPort adjs ty, a))
 
 data PegF :: ((* -> *) -> (* -> *)) -> * -> * where
-  MkPeg :: TFix t AbF -> TFix t VTypeF -> PegF t r                          -- pegs
+  MkPeg :: TFix t AbF -> TFix t UsageVTypeF -> PegF t r                          -- pegs
 deriving instance (Show (TFix t AbF),
-                   Show (TFix t VTypeF),
+                   Show (TFix t UsageVTypeF),
                    Show r, Show (TFix t PegF)) => Show (PegF t r)
 deriving instance (Eq (TFix t AbF),
-                   Eq (TFix t VTypeF),
+                   Eq (TFix t UsageVTypeF),
                    Eq r, Eq (TFix t PegF)) => Eq (PegF t r)
 type Peg a = AnnotTFix a PegF
 pattern Peg ab ty a = Fx (AnnF (MkPeg ab ty, a))
+
+data UsageF :: ((* -> *) -> (* -> *)) -> * -> * where
+    MkMany :: UsageF t r
+    MkOnce :: UsageF t r
+deriving instance Show (UsageF t r)
+deriving instance Eq (UsageF t r)
+type Usage a = AnnotTFix a UsageF
+pattern UMany a = Fx (AnnF (MkMany, a))
+pattern UOnce a = Fx (AnnF (MkOnce, a))
+instance Eq a => Ord (Usage a) where
+    compare (UMany _) (UOnce _) = LT
+    compare (UOnce _) (UMany _) = GT
+    compare (UOnce _) (UOnce _) = EQ
+    compare (UMany _) (UMany _) = EQ
+
+data UsageVTypeF :: ((* -> *) -> (* -> *)) -> * -> * where                  -- value type wrapped with a usage
+  MkUsageTy :: TFix t UsageF -> TFix t VTypeF -> UsageVTypeF t r
+deriving instance (Show (TFix t UsageF), Show (TFix t VTypeF)) => Show (UsageVTypeF t r)
+deriving instance (Eq (TFix t UsageF), Eq (TFix t VTypeF)) => Eq (UsageVTypeF t r)
+type UsageVType a = AnnotTFix a UsageVTypeF
+pattern UsageTy use vt a = Fx (AnnF (MkUsageTy use vt, a))
 
 data VTypeF :: ((* -> *) -> (* -> *)) -> * -> * where                       -- value types
   MkDTTy :: Id -> [TFix t TyArgF] -> VTypeF t r                             --   data types (instant. type constr.)  may be refined to MkTVar
@@ -707,6 +728,8 @@ addAdjNormalForm (AdaptorAdj adp@(CompilableAdp x m ns _) a) (insts, adps) = (
 -- TODO: LC: double-check that the last line is correct
 
 -- helpers
+bareType :: UsageVType a -> VType a
+bareType (UsageTy _ ty _) = ty
 
 adjustWithDefault :: Ord k => (a -> a) -> k -> a -> M.Map k a -> M.Map k a
 adjustWithDefault f k def m =

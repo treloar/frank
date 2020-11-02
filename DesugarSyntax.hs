@@ -142,6 +142,18 @@ desugarCtr (Ctr ctr xs a) = do
   xs' <- mapM desugarVType xs
   return $ Ctr ctr xs' (refToDesug a)
 
+desugarUsage :: Usage Refined -> Desugar (Usage Desugared)
+desugarUsage (UOnce a) = do
+    return $ UOnce (refToDesug a)
+desugarUsage (UMany a) = do
+    return $ UMany (refToDesug a)
+
+desugarUsageVType :: UsageVType Refined -> Desugar (UsageVType Desugared)
+desugarUsageVType (UsageTy use ty a) = do
+                                         ty' <- desugarVType ty
+                                         use' <- desugarUsage use
+                                         return $ UsageTy use' ty' (refToDesug a)
+
 -- explicit refinements:
 -- + replace val ty vars by corresponding MkRTVar's of env,
 --   generate new fresh one and add if not in env yet
@@ -175,12 +187,12 @@ desugarCType (CType ports peg a) =
 
 desugarPort :: Port Refined -> Desugar (Port Desugared)
 desugarPort (Port adjs ty a) = Port <$> (mapM desugarAdjustment adjs)
-                                    <*> desugarVType ty
+                                    <*> desugarUsageVType ty
                                     <*> pure (refToDesug a)
 
 -- nothing happens on this level
 desugarPeg :: Peg Refined -> Desugar (Peg Desugared)
-desugarPeg (Peg ab ty a) = Peg <$> desugarAb ab <*> desugarVType ty <*> pure (refToDesug a)
+desugarPeg (Peg ab ty a) = Peg <$> desugarAb ab <*> desugarUsageVType ty <*> pure (refToDesug a)
 
 -- nothing happens on this level
 desugarAb :: Ab Refined -> Desugar (Ab Desugared)

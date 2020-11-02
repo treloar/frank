@@ -71,6 +71,11 @@ substitInTyArg :: Subst -> TyArg Raw -> Refine (TyArg Raw)
 substitInTyArg subst (VArg ty a) = VArg <$> substitInVType subst ty <*> pure a
 substitInTyArg subst (EArg ab a) = EArg <$> substitInAb subst ab <*> pure a
 
+substitInUsageVType :: Subst -> UsageVType Raw -> Refine (UsageVType Raw)
+substitInUsageVType subst (UsageTy use ty a) = do
+  ty' <- substitInVType subst ty
+  return $ UsageTy use ty' a
+
 substitInVType :: Subst -> VType Raw -> Refine (VType Raw)
 substitInVType subst (DTTy x ts a) = do
   dtm <- getRDTs
@@ -98,12 +103,12 @@ substitInCType subst (CType ports peg a) = do ports' <- mapM (substitInPort subs
 
 substitInPort :: Subst -> Port Raw -> Refine (Port Raw)
 substitInPort subst (Port adjs ty a) = do adjs' <- mapM (substitInAdj subst) adjs
-                                          ty' <- substitInVType subst ty
+                                          ty' <- substitInUsageVType subst ty
                                           return $ Port adjs' ty' a
 
 substitInPeg :: Subst -> Peg Raw -> Refine (Peg Raw)
 substitInPeg subst (Peg ab ty a) = do ab' <- substitInAb subst ab
-                                      ty' <- substitInVType subst ty
+                                      ty' <- substitInUsageVType subst ty
                                       return $ Peg ab' ty' a
 
 substitInAb :: Subst -> Ab Raw -> Refine (Ab Raw)

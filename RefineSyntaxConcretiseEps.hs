@@ -177,14 +177,14 @@ concretiseEps dts itfs itfAls =
   hasEpsCType tvs (CType ports peg a) = anyHasEps $ map (hasEpsPort tvs) ports ++ [hasEpsPeg tvs peg]
 
   hasEpsPort :: [Id] -> Port Raw -> HasEps
-  hasEpsPort tvs (Port adjs ty a) = anyHasEps [anyHasEps (map (hasEpsAdj tvs) adjs), hasEpsVType tvs ty]
+  hasEpsPort tvs (Port adjs ty a) = anyHasEps [anyHasEps (map (hasEpsAdj tvs) adjs), hasEpsVType tvs (bareType ty)]
 
   hasEpsAdj :: [Id] -> Adjustment Raw -> HasEps
   hasEpsAdj tvs (ConsAdj x ts a) = anyHasEps (map (hasEpsTyArg tvs) ts)
   hasEpsAdj _ (AdaptorAdj _ _) = hasNoEps
 
   hasEpsPeg :: [Id] -> Peg Raw -> HasEps
-  hasEpsPeg tvs (Peg ab ty a) = anyHasEps [hasEpsAb tvs ab, hasEpsVType tvs ty]
+  hasEpsPeg tvs (Peg ab ty a) = anyHasEps [hasEpsAb tvs ab, hasEpsVType tvs (bareType ty)]
 
   hasEpsAb :: [Id] -> Ab Raw -> HasEps
   hasEpsAb tvs (Ab v m a) = anyHasEps [hasEpsAbMod tvs v, hasEpsItfMap tvs m]

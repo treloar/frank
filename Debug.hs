@@ -174,21 +174,21 @@ logBeginInferUse u@(Adapted rs t _) = ifDebugTypeCheckOnThen $ do
   debugTypeCheckM $ "begin infer use of app: Under curr. amb. " ++ show (ppAb amb) ++ "\n   infer type of " ++ show (ppUse u) ++ "\n\n"
 
 
-logEndInferUse :: Use Desugared -> VType Desugared -> Contextual ()
+logEndInferUse :: Use Desugared -> UsageVType Desugared -> Contextual ()
 logEndInferUse u@(Op x _) ty = ifDebugTypeCheckOnThen $ do
   amb <- getAmbient
-  debugTypeCheckM $ "ended infer use of single: Under curr. amb. " ++ show (ppAb amb) ++ "\n   infer type of " ++ show (ppUse u) ++ "\n   gives " ++ show (ppVType ty)
+  debugTypeCheckM $ "ended infer use of single: Under curr. amb. " ++ show (ppAb amb) ++ "\n   infer type of " ++ show (ppUse u) ++ "\n   gives " ++ show (ppUsageVType ty)
   ctx <- getContext
   debugTypeCheckM ("cur. context is:\n" ++ (show $ ppContext ctx) ++ "\n\n")
 logEndInferUse u@(App f xs _) ty = ifDebugTypeCheckOnThen $ do
   amb <- getAmbient
-  debugTypeCheckM $ "ended infer use of app: Under curr. amb. " ++ show (ppAb amb) ++ "\n   infer type of " ++ show (ppUse u) ++ "\n   gives " ++ show (ppVType ty) ++ "\n\n"
+  debugTypeCheckM $ "ended infer use of app: Under curr. amb. " ++ show (ppAb amb) ++ "\n   infer type of " ++ show (ppUse u) ++ "\n   gives " ++ show (ppUsageVType ty) ++ "\n\n"
 logEndInferUse u@(Adapted rs t _) ty = ifDebugTypeCheckOnThen $ do
   amb <- getAmbient
   debugTypeCheckM $ "ended infer use of redirected: Under curr. amb. " ++
     show (ppAb amb) ++ " redirected by <" ++ (show rs) ++
     ">\n   infer type of " ++ show (ppUse u) ++
-    "\n   gives " ++ show (ppVType ty) ++ "\n\n"
+    "\n   gives " ++ show (ppUsageVType ty) ++ "\n\n"
 
 logBeginUnify :: VType Desugared -> VType Desugared -> Contextual ()
 logBeginUnify t0 t1 = ifDebugTypeCheckOnThen $ do
@@ -209,6 +209,21 @@ logEndUnifyAb :: Ab Desugared -> Ab Desugared -> Contextual ()
 logEndUnifyAb ab0 ab1 = ifDebugTypeCheckOnThen $ do
   ctx <- getContext
   debugTypeCheckM $ "ended unifying ab. \n   " ++ show (ppAb ab0) ++ "\nwith\n   " ++ show (ppAb ab1) ++ "\nCurrent context:\n" ++ show (ppContext ctx) ++ "\n\n"
+
+logContext :: Contextual ()
+logContext = ifDebugTypeCheckOnThen $ do
+  ctx <- getContext
+  debugTypeCheckM $ "Current context:\n" ++ show (ppContext ctx) ++ "\n\n"
+
+logBeginRemoveVar :: Operator Typed -> UsageVType Desugared -> Contextual ()
+logBeginRemoveVar op uty = ifDebugTypeCheckOnThen $ do
+  debugTypeCheckM $ "Removing from context: " ++ show (ppOperator op) ++ " := "++ show (ppUsageVType uty) 
+  logContext
+
+logEndRemoveVar :: Operator Typed -> UsageVType Desugared -> Contextual ()
+logEndRemoveVar op uty = ifDebugTypeCheckOnThen $ do
+  debugTypeCheckM $ "Removed from context: " ++ show (ppOperator op) ++ " := "++ show (ppUsageVType uty) 
+  logContext
 
 logBeginSolve :: Id -> Suffix -> VType Desugared -> Contextual ()
 logBeginSolve a ext ty = ifDebugTypeCheckOnThen $ do
@@ -361,6 +376,13 @@ ppCType (CType ps q _) = text "{" <> ports <> peg <> text "}"
       xs -> foldl (\acc x -> x <+> text "-> " <> acc) PP.empty (reverse xs)
     peg = ppPeg q
 
+ppUsage :: (Show a, HasSource a) => Usage a -> PP.Doc
+ppUsage (UOnce _) = text "UOnce"
+ppUsage (UMany _) = text "UMany"
+
+ppUsageVType :: (Show a, HasSource a) => UsageVType a -> PP.Doc
+ppUsageVType (UsageTy use ty _) = ppUsage use <+> text ":" <+> ppVType ty
+
 ppVType :: (Show a, HasSource a) => VType a -> PP.Doc
 ppVType (DTTy x ts _) = text x <+> foldl (<+>) PP.empty (map ppTyArg ts)
 ppVType (SCTy cty _) = ppCType cty
@@ -380,11 +402,11 @@ ppParenVType v@(DTTy _ _ _) = text "(" <+> ppVType v <+> text ")"
 ppParenVType v = ppVType v
 
 ppPort :: (Show a, HasSource a) => Port a -> PP.Doc
-ppPort (Port []   ty _) = ppVType ty
-ppPort (Port adjs ty _) = text "<" <> (PP.hsep $ intersperse PP.comma $ map ppAdj adjs) <> text ">" <> ppVType ty
+ppPort (Port []   uty _) = ppUsageVType uty 
+ppPort (Port adjs uty _) = text "<" <> (PP.hsep $ intersperse PP.comma $ map ppAdj adjs) <> text ">" <> ppUsageVType uty
 
 ppPeg :: (Show a, HasSource a) => Peg a -> PP.Doc
-ppPeg (Peg ab ty _) = ppAb ab <> ppVType ty
+ppPeg (Peg ab uty _) = ppAb ab <> ppUsageVType uty
 
 ppAdj :: (Show a, HasSource a) => Adjustment a -> PP.Doc
 ppAdj (ConsAdj x ts _) = ppItfInstance (x, ts)
@@ -437,7 +459,7 @@ ppSComp :: (Show a, HasSource a) => SComp a -> PP.Doc
 ppSComp (SComp cls _) = text "{" <+> sep (map (ppClause "") cls) <+> text "}"
 
 ppUse :: (Show a, HasSource a) => Use a -> PP.Doc
-ppUse (RawId x _) = text x
+ppUse (RawId x _) = text "raw: " <+> text x
 ppUse (RawComb u args _) = PP.lparen <> ppUse u <+> ppArgs args <> PP.rparen
 ppUse (Op op _) = ppOperator op
 ppUse (App u args _) = PP.lparen <> ppUse u <+> ppArgs args <> PP.rparen
@@ -477,7 +499,7 @@ ppContext = ppFwd . (map ppEntry) . bwd2fwd
 
 ppEntry :: Entry -> PP.Doc
 ppEntry (FlexMVar x decl) = text "FlexMVar " <+> text x <+> text "\t=\t\t" <+> (ppDecl decl)
-ppEntry (TermVar op ty)   = text "TermVar " <+> text (show op) <+> text "\t:=\t" <+> (ppVType ty)
+ppEntry (TermVar op ty)   = text "TermVar " <+> text (show op) <+> text "\t:=\t" <+> (ppUsageVType ty)
 ppEntry Mark              = text "<Mark>"
 
 ppDecl :: Decl -> PP.Doc

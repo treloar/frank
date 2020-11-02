@@ -52,7 +52,7 @@ instance MonadFail Contextual where
   fail = throwError
 
 data Entry = FlexMVar Id Decl
-           | TermVar (Operator Typed) (VType Desugared)
+           | TermVar (Operator Typed) (UsageVType Desugared)
            | Mark
            deriving (Show)
 data Decl = Hole
@@ -60,7 +60,7 @@ data Decl = Hole
           | AbDefn (Ab Desugared)
           deriving (Show)
 type Context = Bwd Entry
-type TermBinding = (Operator Typed, VType Desugared)
+type TermBinding = (Operator Typed, UsageVType Desugared)
 type Suffix = [(Id, Decl)]
 
 -- push fresh meta variable on context (corresponds to "freshMeta" in Gundry's thesis)
@@ -99,10 +99,10 @@ fmvCType :: CType Desugared -> S.Set Id
 fmvCType (CType ps q _) = S.union (foldMap fmvPort ps) (fmvPeg q)
 
 fmvPeg :: Peg Desugared -> S.Set Id
-fmvPeg (Peg ab ty _) = S.union (fmvAb ab) (fmv ty)
+fmvPeg (Peg ab ty _) = S.union (fmvAb ab) (fmv (bareType ty))
 
 fmvPort :: Port Desugared -> S.Set Id
-fmvPort (Port adjs ty _) = S.union (foldMap fmvAdj adjs) (fmv ty)
+fmvPort (Port adjs ty _) = S.union (foldMap fmvAdj adjs) (fmv (bareType ty))
 
 entrify :: Suffix -> [Entry]
 entrify = map $ uncurry FlexMVar
@@ -205,7 +205,7 @@ initContextual (MkProg ttms) =
 
         -- init context for each handler id of type ty with "id := ty"
         h :: MHDef Desugared -> Contextual ()
-        h (Def id ty _ a) = modify (:< TermVar (Poly id a') (SCTy ty a))
+        h (Def id ty _ a) = modify (:< TermVar (Poly id a') (UsageTy (UMany a) (SCTy ty a) a))
           where a' = refToTyped a
 
 initTCState :: TCState

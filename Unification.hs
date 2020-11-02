@@ -32,6 +32,7 @@ onTop f = popEntry >>= focus
                Restore -> modify (:< e)
         focus e = onTop f >> modify (:< e)
 
+
 -- unify 2 val tys in current context
 unify :: VType Desugared -> VType Desugared -> Contextual ()                    -- corresponding rule in Gundry's thesis:
 unify t0 t1 = do logBeginUnify t0 t1
@@ -61,6 +62,18 @@ unify t0 t1 = do logBeginUnify t0 t1
   unify' (FTVar x a)     ty                   = solve x a [] ty                 -- inst
   unify' ty              (FTVar y b)          = solve y b [] ty                 -- inst
   unify' t               s                    = throwError $ errorUnifTys t s
+
+unifyUsageTy :: UsageVType Desugared -> UsageVType Desugared -> Contextual ()
+unifyUsageTy uty0@(UsageTy u1 ty0 a) uty1@(UsageTy u2 ty1 b) = 
+  do 
+    if u2 <= u1
+        then return ()
+        else throwError $ "failed to unify usages: " ++
+                          (show $ ppUsageVType uty0) ++
+                          " expected to be <= " ++
+                          (show $ ppUsageVType uty1)
+    unify ty0 ty1
+     
 
 -- unify 2 eff tys in current context
 unifyAb :: Ab Desugared -> Ab Desugared -> Contextual ()
@@ -120,7 +133,7 @@ unifyCType (CType xs p0 _) (CType ys p1 _) =
   zipWithM_ unifyPort xs ys >> unifyPeg p0 p1
 
 unifyPeg :: Peg Desugared -> Peg Desugared -> Contextual ()
-unifyPeg (Peg ab0 ty0 _) (Peg ab1 ty1 _) = unifyAb ab0 ab1 >> unify ty0 ty1
+unifyPeg (Peg ab0 ty0 _) (Peg ab1 ty1 _) = unifyAb ab0 ab1 >> unifyUsageTy ty0 ty1
 
 -- Two ports unify if
 -- 1) their adjustments coincide (first normalise both)
@@ -132,9 +145,9 @@ unifyPort (Port adjs1 ty1 _) (Port adjs2 ty2 _) =
      unifyItfMap (ItfMap insts1 (Desugared Generated))  -- TODO: LC: fix this
                  (ItfMap insts2 (Desugared Generated))
      if adps1 == adps2 then
-       unify ty1 ty2
+       unifyUsageTy ty1 ty2
      else throwError $ "adaptors not the same"
-
+     
 -- unify a meta variable "x" with a type "ty"
 solve :: Id -> Desugared -> Suffix -> VType Desugared -> Contextual ()
 solve x a ext ty = do logBeginSolve x ext ty
@@ -195,10 +208,10 @@ substCType ty x (CType ps peg a) =
   CType (map (substPort ty x) ps) (substPeg ty x peg) a
 
 substPeg :: VType Desugared -> Id -> Peg Desugared -> Peg Desugared
-substPeg ty x (Peg ab pty a) = Peg (substAb ty x ab) (subst ty x pty) a
+substPeg ty x (Peg ab (UsageTy use pty b) a) = Peg (substAb ty x ab) (UsageTy use (subst ty x pty) b) a
 
 substPort :: VType Desugared -> Id -> Port Desugared -> Port Desugared
-substPort ty x (Port adjs pty a) = Port (map (substAdj ty x) adjs) (subst ty x pty) a
+substPort ty x (Port adjs (UsageTy use pty b) a) = Port (map (substAdj ty x) adjs) (UsageTy use (subst ty x pty) b) a
 
 substEVar :: Ab Desugared -> Id -> VType Desugared -> VType Desugared
 substEVar ab x (DTTy dt ts a) = DTTy dt (map (substEVarTyArg ab x) ts) a
@@ -225,12 +238,12 @@ substEVarCType ab x (CType ps peg a) =
   CType (map (substEVarPort ab x) ps) (substEVarPeg ab x peg) a
 
 substEVarPeg :: Ab Desugared -> Id -> Peg Desugared -> Peg Desugared
-substEVarPeg ab' x (Peg ab pty a) =
-  Peg (substEVarAb ab' x ab) (substEVar ab' x pty) a
+substEVarPeg ab' x (Peg ab (UsageTy use pty b) a) =
+  Peg (substEVarAb ab' x ab) (UsageTy use (substEVar ab' x pty) b) a
 
 substEVarPort :: Ab Desugared -> Id -> Port Desugared -> Port Desugared
-substEVarPort ab x (Port adjs pty a) =
-  Port (map (substEVarAdj ab x) adjs) (substEVar ab x pty) a
+substEVarPort ab x (Port adjs (UsageTy use pty b) a) =
+  Port (map (substEVarAdj ab x) adjs) (UsageTy use (substEVar ab x pty) b) a
 
 {- Helpers -}
 
